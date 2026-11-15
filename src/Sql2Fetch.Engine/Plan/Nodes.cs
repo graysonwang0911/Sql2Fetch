@@ -118,7 +118,13 @@ public sealed class JoinNode : PlanNode
         }
 
         if (key is null)
+        {
+            // FlattenAnd 之后还剩下的二元表达式只可能是 OR
+            if (terms.Any(t => t is BooleanBinaryExpression))
+                throw new SqlTranslationException("JOIN 的 ON 条件里不能用 OR 把关联条件和其他条件连起来", On,
+                    "ON 里先写一个 左表列 = 右表列,其他条件用 AND 连接,或者移到 WHERE 里");
             throw new SqlTranslationException("JOIN 的 ON 条件里必须有一个 左表列 = 右表列 的等值条件", On);
+        }
 
         var joinType = JoinType;
         var (leftCol, rightCol) = key.Value;
@@ -161,6 +167,19 @@ public sealed class JoinNode : PlanNode
         // 额外的 ON 条件:只引用右表的放进 link-entity 的 filter
         foreach (var term in extra)
         {
+            // 先查一遍有没有引用左表:不查的话会落到列解析里,报出让人摸不着头脑的"找不到表别名"
+            var leftRef = ColumnReferences(term).FirstOrDefault(c =>
+                c.MultiPartIdentifier?.Identifiers is { Count: 2 } ids
+                && rightSchema.FindTable(ids[0].Value) is null && leftSchema.FindTable(ids[0].Value) is not null);
+            if (leftRef is not null)
+            {
+                var isSecondKey = term is BooleanComparisonExpression { ComparisonType: BooleanComparisonType.Equals,
+                    FirstExpression: ColumnReferenceExpression, SecondExpression: ColumnReferenceExpression };
+                throw new SqlTranslationException(
+                    isSecondKey ? "JOIN 只能用一对列做关联,不支持多列联合关联" : "JOIN 的附加条件只能引用右表自身的列",
+                    term, "引用了左表的条件请移到 WHERE 里");
+            }
+
             var translated = CriteriaTranslator.Translate(term, rightSchema, ctx);
             var filter = translated as FetchFilter ?? new FetchFilter { Items = { translated } };
             foreach (var c in filter.AllConditions())
@@ -181,6 +200,20 @@ public sealed class JoinNode : PlanNode
             ctx.Warn($"link-entity 数量为 {linkCount},Dataverse 最多允许 10 个(新版本 15 个)");
 
         return left;
+    }
+
+    /// <summary>收集一个表达式里出现的所有列引用。</summary>
+    private static List<ColumnReferenceExpression> ColumnReferences(TSqlFragment fragment)
+    {
+        var collector = new ColumnCollector();
+        fragment.Accept(collector);
+        return collector.Columns;
+    }
+
+    private sealed class ColumnCollector : TSqlFragmentVisitor
+    {
+        public List<ColumnReferenceExpression> Columns { get; } = new();
+        public override void Visit(ColumnReferenceExpression node) => Columns.Add(node);
     }
 
     private static char SideOf(ColumnReferenceExpression col, NodeSchema left, NodeSchema right)

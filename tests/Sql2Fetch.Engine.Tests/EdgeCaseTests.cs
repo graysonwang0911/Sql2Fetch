@@ -125,10 +125,58 @@ public class EdgeCaseTests
     [Theory]
     [InlineData("SELECT *, COUNT(*) FROM account GROUP BY name", "*")]
     [InlineData("SELECT TOP 5 name FROM account ORDER BY name OFFSET 10 ROWS FETCH NEXT 5 ROWS ONLY", "不能同时使用")]
+    [InlineData("SELECT name FROM account WHERE 1 = 1 AND statecode = 0", "两边都是常量")]
+    [InlineData("SELECT name, COUNT(*) OVER () FROM account", "窗口函数")]
+    [InlineData("SELECT ROW_NUMBER() OVER (ORDER BY name) FROM account", "窗口函数")]
+    [InlineData("SELECT YEAR(createdon) FROM account", "按日期分组")]
+    [InlineData("SELECT name FROM account WHERE name IN (statecode, 'x')", "不能是列")]
+    [InlineData("SELECT name FROM account WHERE name LIKE \"x\"", "不能是列")]
+    [InlineData("SELECT a.name FROM account a JOIN contact c ON c.parentcustomerid = a.accountid OR c.name = 'x'", "不能用 OR")]
+    [InlineData("SELECT a.name FROM account a JOIN contact c ON c.parentcustomerid = a.accountid AND a.statecode = 0", "只能引用右表")]
+    [InlineData("SELECT a.name FROM account a JOIN contact c ON c.parentcustomerid = a.accountid AND c.name = a.name", "多列联合关联")]
+    [InlineData("SELECT a.name FROM account a JOIN contact c ON c.name > a.name", "等值条件")]
     public void ReportsARegularError(string sql, string messagePart)
     {
         var ex = Assert.Throws<SqlTranslationException>(() => Convert(sql));
         Assert.Contains(messagePart, ex.Message);
+    }
+
+    [Fact]
+    public void JoinFilterOnRightTableStillWorks()
+    {
+        var r = Convert("SELECT a.name FROM account a JOIN contact c ON c.parentcustomerid = a.accountid AND (c.name = 'x' OR c.firstname = 'y')");
+        Assert.Equal(2, Fetch(r).Descendants("link-entity").Single().Descendants("condition").Count());
+    }
+
+    // ---- FETCH NEXT 超过 FetchXML 每页上限 ----
+
+    [Fact]
+    public void FetchNextAboveLimitIsPagedLocally()
+    {
+        var r = Convert("SELECT name FROM account ORDER BY name OFFSET 7 ROWS FETCH NEXT 6000 ROWS ONLY");
+        Assert.Null(Fetch(r).Attribute("count"));
+        Assert.Null(Fetch(r).Attribute("page"));
+        Assert.Equal(6000, r.LocalTop);
+        Assert.Equal(7, r.LocalOffset);
+        Assert.Contains(r.Warnings, w => w.Contains("5000"));
+    }
+
+    [Fact]
+    public void FetchNextAtLimitStaysInFetchXml()
+    {
+        var r = Convert("SELECT name FROM account ORDER BY name OFFSET 5000 ROWS FETCH NEXT 5000 ROWS ONLY");
+        Assert.Equal("5000", Fetch(r).Attribute("count")?.Value);
+        Assert.Equal("2", Fetch(r).Attribute("page")?.Value);
+        Assert.Null(r.LocalTop);
+    }
+
+    // ---- 双引号字符串 ----
+
+    [Fact]
+    public void DoubleQuotedValueWarnsOffline()
+    {
+        var r = SqlToFetchXml.Convert("SELECT name FROM account WHERE name = \"x\"");
+        Assert.Contains(r.Warnings, w => w.Contains("单引号"));
     }
 
     // ---- 重复列 ----

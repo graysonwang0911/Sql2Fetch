@@ -124,6 +124,10 @@ internal sealed class PlanBuilder
                     var alias = scalar.ColumnName?.Value;
                     var expr = scalar.Expression;
 
+                    // COUNT(*) OVER () 不拦的话会被当成普通聚合,报出不相干的 GROUP BY 错误
+                    if (expr is FunctionCall { OverClause: not null })
+                        throw SqlTranslationException.NotSupported(expr, "窗口函数 (OVER)", "FetchXML 没有窗口函数,请取回数据后自己计算");
+
                     if (expr is FunctionCall func && AggregateFunctions.Contains(func.FunctionName.Value))
                     {
                         hasAggregate = true;
@@ -189,7 +193,10 @@ internal sealed class PlanBuilder
             {
                 if (sc.Expression is FunctionCall f && AggregateFunctions.Contains(f.FunctionName.Value)) continue;
                 var match = groupExprs.FirstOrDefault(g => SameGroupExpression(g, sc.Expression))
-                    ?? throw new SqlTranslationException($"列 \"{sc.OutputName}\" 没有出现在 GROUP BY 中,也不是聚合函数", sc.Expression);
+                    ?? throw (sc.Expression is FunctionCall
+                        ? new SqlTranslationException($"{FragmentText(sc.Expression)} 是按日期分组的写法,只能用在分组查询里", sc.Expression,
+                            $"在 GROUP BY 里也写上 {FragmentText(sc.Expression)}")
+                        : new SqlTranslationException($"列 \"{sc.OutputName}\" 没有出现在 GROUP BY 中,也不是聚合函数", sc.Expression));
                 groupBy.Add(ToGroupBy(match, sc.OutputName));
             }
 
@@ -326,6 +333,13 @@ internal sealed class PlanBuilder
                 LocalOffset = offset;
                 LocalTop = fetch;
                 _ctx.Warn($"OFFSET/FETCH 要在 HAVING 之后生效,因此也改为本地处理:过滤后跳过 {offset} 行,再取 {fetch} 行");
+            }
+            else if (fetch > MaxFetchTop)
+            {
+                // FetchXML 每页最多 5000 行,更大的 FETCH NEXT 表达不了,和超限的 TOP 一样改由执行时翻页处理
+                LocalOffset = offset;
+                LocalTop = fetch;
+                _ctx.Warn($"FetchXML 每页最多 {MaxFetchTop} 行,FETCH NEXT {fetch} 改为执行时翻页:跳过 {offset} 行后取够 {fetch} 行;生成的 FetchXML 里不含分页");
             }
             else
             {

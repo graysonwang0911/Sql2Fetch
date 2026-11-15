@@ -42,7 +42,66 @@ public partial class MainViewModel : ViewModelBase
     [ObservableProperty] public partial string Status { get; set; } = "离线模式:可以翻译,不校验表名列名;连接后可校验并执行";
     [ObservableProperty] public partial string Warnings { get; set; } = "";
     [ObservableProperty] public partial bool IsBusy { get; set; }
-    [ObservableProperty] public partial bool IsConnected { get; set; }
+    [ObservableProperty, NotifyPropertyChangedFor(nameof(CanRefreshTables))]
+    public partial bool IsConnected { get; set; }
+
+    /// <summary>正在手动刷新表清单。</summary>
+    [ObservableProperty, NotifyPropertyChangedFor(nameof(CanRefreshTables))]
+    public partial bool IsRefreshingTables { get; set; }
+
+    public bool CanRefreshTables => IsConnected && !IsRefreshingTables;
+
+    /// <summary>
+    /// 手动刷新:重新读取环境里的表清单(新建/删除的表、显示名、类型)和各表记录数。
+    /// 表清单只在连接时和点这个按钮时加载,平时不会自动更新。
+    /// </summary>
+    [RelayCommand]
+    private async Task RefreshTablesAsync()
+    {
+        var metadata = _metadata;
+        if (metadata is null || IsRefreshingTables) return;
+
+        IsRefreshingTables = true;
+        IsError = false;
+        Status = "正在刷新表清单...";
+        try
+        {
+            // 失败时 metadata 里的旧清单保持不变
+            await metadata.LoadEntitiesAsync();
+            if (!ReferenceEquals(metadata, _metadata)) return; // 期间断开了连接
+
+            var selectedName = SelectedTable?.LogicalName;
+            var before = _allTables.Count;
+            _allTables.Clear();
+            _allTables.AddRange(metadata.Entities
+                .OrderBy(e => e.LogicalName, StringComparer.OrdinalIgnoreCase)
+                .Select(e => new TableItem(e.LogicalName, e.DisplayName, e.EntitySetName, e.Category, e.CategoryDetail)));
+            ApplyTableFilter();
+
+            // 清单里的项都是新对象,按表名把选中项找回来;下方已显示的表结构和 ER 图不动
+            if (selectedName is not null
+                && Tables.FirstOrDefault(t => string.Equals(t.LogicalName, selectedName, StringComparison.OrdinalIgnoreCase)) is { } again)
+            {
+                _restoringSelection = true;
+                try { SelectedTable = again; }
+                finally { _restoringSelection = false; }
+            }
+
+            var diff = _allTables.Count - before;
+            Status = $"表清单已刷新,共 {_allTables.Count} 张表"
+                     + (diff == 0 ? "" : diff > 0 ? $"(比刷新前多 {diff} 张)" : $"(比刷新前少 {-diff} 张)")
+                     + ",正在重新加载记录数";
+            _ = LoadRecordCountsAsync(metadata);
+        }
+        catch (Exception ex)
+        {
+            if (ReferenceEquals(metadata, _metadata)) SetError("刷新表清单失败(保留原来的清单): " + ex.Message);
+        }
+        finally
+        {
+            IsRefreshingTables = false;
+        }
+    }
     [ObservableProperty] public partial string ConnectionLabel { get; set; } = "未连接";
     [ObservableProperty] public partial bool IsError { get; set; }
 
@@ -248,13 +307,134 @@ public partial class MainViewModel : ViewModelBase
     }
 
     /// <summary>ER 图里的一张关联表。Kind 是 "N:1" / "1:N" / "N:N";Columns 是参与关系的查找列(N:N 时是中间表)。</summary>
-    public sealed record ErNode(string LogicalName, string? DisplayName, string Kind, System.Collections.Generic.IReadOnlyList<string> Columns);
+    public sealed record ErNode(string LogicalName, string? DisplayName, string Kind, System.Collections.Generic.IReadOnlyList<string> Columns,
+        DataverseMetadataProvider.TableCategory Category = DataverseMetadataProvider.TableCategory.Unknown);
+
+    /// <summary>中心表的一条自关联。ManyToMany 时 Column 是中间表名,否则是查找列。</summary>
+    public sealed record ErSelfRelation(bool ManyToMany, string Column);
 
     /// <summary>以一张表为中心的 ER 图:Parents 是本表引用的表,Children 是引用本表的表和多对多的表。</summary>
     public sealed record ErModel(string LogicalName, string? DisplayName, string? PrimaryId,
         System.Collections.Generic.IReadOnlyList<string> SelfLines,
         System.Collections.Generic.IReadOnlyList<ErNode> Parents,
-        System.Collections.Generic.IReadOnlyList<ErNode> Children);
+        System.Collections.Generic.IReadOnlyList<ErNode> Children,
+        DataverseMetadataProvider.TableCategory Category = DataverseMetadataProvider.TableCategory.Unknown,
+        System.Collections.Generic.IReadOnlyList<ErSelfRelation>? SelfRelations = null);
+
+    /// <summary>ER 图上标注的表类型名;未知时为空。</summary>
+    public static string CategoryName(DataverseMetadataProvider.TableCategory category) => category switch
+    {
+        DataverseMetadataProvider.TableCategory.Business => "业务表",
+        DataverseMetadataProvider.TableCategory.Config => "配置表",
+        DataverseMetadataProvider.TableCategory.System => "系统表",
+        DataverseMetadataProvider.TableCategory.Intersect => "中间表",
+        _ => "",
+    };
+
+    public bool HasEr => Er is not null;
+
+    /// <summary>按 ER 过滤框筛选后的关联表(界面和导出共用,导出的就是看到的)。</summary>
+    public (System.Collections.Generic.List<ErNode> Parents, System.Collections.Generic.List<ErNode> Children) FilteredErNodes()
+    {
+        var er = Er;
+        if (er is null) return (new(), new());
+        var filter = (ErFilter ?? "").Trim();
+        bool Match(ErNode n) => filter.Length == 0
+            || n.LogicalName.Contains(filter, StringComparison.OrdinalIgnoreCase)
+            || (n.DisplayName?.Contains(filter, StringComparison.OrdinalIgnoreCase) ?? false)
+            || n.Columns.Any(c => c.Contains(filter, StringComparison.OrdinalIgnoreCase));
+        return (er.Parents.Where(Match).ToList(), er.Children.Where(Match).ToList());
+    }
+
+    /// <summary>
+    /// 把当前 ER 图(过滤后)整理成两张工作表:「表」列出图里的每张表和它的类型,「关系」每条关系一行。
+    /// 没有 ER 图时返回 null。
+    /// </summary>
+    public System.Collections.Generic.IReadOnlyList<XlsxWriter.Sheet>? BuildErSheets()
+    {
+        var er = Er;
+        if (er is null) return null;
+        var (parents, children) = FilteredErNodes();
+        var cmp = StringComparer.OrdinalIgnoreCase;
+
+        // 表:当前表在最前,其余按表名;同一张表可能既被引用又引用本表,关系合并写
+        var tables = new System.Collections.Generic.List<System.Collections.Generic.IReadOnlyList<string>>
+        {
+            new[] { "表名", "显示名", "表类型", "与当前表的关系" },
+            new[] { er.LogicalName, er.DisplayName ?? "", CategoryName(er.Category), "当前表" },
+        };
+        foreach (var g in parents.Concat(children).GroupBy(n => n.LogicalName, cmp).OrderBy(g => g.Key, cmp))
+            tables.Add(new[] { g.Key, g.First().DisplayName ?? "", CategoryName(g.First().Category), string.Join(" / ", g.Select(n => n.Kind).Distinct()) });
+
+        var relations = new System.Collections.Generic.List<System.Collections.Generic.IReadOnlyList<string>>
+        {
+            new[] { "关系", "当前表", "关联表", "关联表显示名", "关联表类型", "查找列所在的表", "查找列", "中间表" },
+        };
+        void Add(string kind, string related, string? display, DataverseMetadataProvider.TableCategory category, string lookupTable, string lookup, string intersect) =>
+            relations.Add(new[] { kind, er.LogicalName, related, display ?? "", CategoryName(category), lookupTable, lookup, intersect });
+
+        foreach (var n in parents)
+            foreach (var column in n.Columns.DefaultIfEmpty(""))
+                Add("N:1", n.LogicalName, n.DisplayName, n.Category, er.LogicalName, column, "");
+        foreach (var n in children)
+            foreach (var column in n.Columns.DefaultIfEmpty(""))
+            {
+                if (n.Kind == "N:N") Add("N:N", n.LogicalName, n.DisplayName, n.Category, "", "", column);
+                else Add("1:N", n.LogicalName, n.DisplayName, n.Category, n.LogicalName, column, "");
+            }
+        foreach (var self in er.SelfRelations ?? Array.Empty<ErSelfRelation>())
+        {
+            if (self.ManyToMany) Add("N:N 自关联", er.LogicalName, er.DisplayName, er.Category, "", "", self.Column);
+            else Add("自关联", er.LogicalName, er.DisplayName, er.Category, er.LogicalName, self.Column, "");
+        }
+
+        return new[] { new XlsxWriter.Sheet("表", tables), new XlsxWriter.Sheet("关系", relations) };
+    }
+
+    /// <summary>把当前 ER 图(过滤后)导出成 Mermaid erDiagram 文本;没有 ER 图时返回 null。</summary>
+    public string? BuildErMermaid()
+    {
+        var er = Er;
+        if (er is null) return null;
+        var (parents, children) = FilteredErNodes();
+
+        static string Quote(string text) => "\"" + text.Replace("\"", "'") + "\"";
+        static string Label(string logicalName, string? displayName, DataverseMetadataProvider.TableCategory category)
+        {
+            var label = logicalName;
+            if (!string.IsNullOrEmpty(displayName) && displayName != logicalName) label += " · " + displayName;
+            var type = CategoryName(category);
+            return Quote(type.Length == 0 ? label : $"{label} [{type}]");
+        }
+
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine("erDiagram");
+
+        // 实体定义:别名里带显示名和表类型
+        sb.Append("    ").Append(er.LogicalName).Append('[').Append(Label(er.LogicalName, er.DisplayName, er.Category)).Append(']');
+        if (!string.IsNullOrEmpty(er.PrimaryId)) sb.AppendLine(" {").Append("        uniqueidentifier ").Append(er.PrimaryId).AppendLine(" PK").AppendLine("    }");
+        else sb.AppendLine();
+
+        var declared = new System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase) { er.LogicalName };
+        foreach (var n in parents.Concat(children))
+            if (declared.Add(n.LogicalName))
+                sb.Append("    ").Append(n.LogicalName).Append('[').Append(Label(n.LogicalName, n.DisplayName, n.Category)).AppendLine("]");
+
+        sb.AppendLine();
+        // 关系:"一"的一方写在左边
+        foreach (var n in parents)
+            sb.AppendLine($"    {n.LogicalName} ||--o{{ {er.LogicalName} : {Quote(string.Join(", ", n.Columns))}");
+        foreach (var n in children)
+            sb.AppendLine(n.Kind == "N:N"
+                ? $"    {er.LogicalName} }}o--o{{ {n.LogicalName} : {Quote(string.Join(", ", n.Columns))}"
+                : $"    {er.LogicalName} ||--o{{ {n.LogicalName} : {Quote(string.Join(", ", n.Columns))}");
+        foreach (var self in er.SelfRelations ?? Array.Empty<ErSelfRelation>())
+            sb.AppendLine(self.ManyToMany
+                ? $"    {er.LogicalName} }}o--o{{ {er.LogicalName} : {Quote(self.Column)}"
+                : $"    {er.LogicalName} ||--o{{ {er.LogicalName} : {Quote(self.Column)}");
+
+        return sb.ToString();
+    }
 
     private const string ErHint = "点击左侧的表查看 ER 图";
 
@@ -271,6 +451,7 @@ public partial class MainViewModel : ViewModelBase
     private void ClearEr(string title)
     {
         Er = null;
+        OnPropertyChanged(nameof(HasEr));
         ErTitle = title;
         ErChanged?.Invoke();
     }
@@ -290,7 +471,8 @@ public partial class MainViewModel : ViewModelBase
 
             var cmp = StringComparer.OrdinalIgnoreCase;
             var displayNames = new System.Collections.Generic.Dictionary<string, string?>(cmp);
-            foreach (var t in _allTables) displayNames[t.LogicalName] = t.DisplayName;
+            var categories = new System.Collections.Generic.Dictionary<string, DataverseMetadataProvider.TableCategory>(cmp);
+            foreach (var t in _allTables) { displayNames[t.LogicalName] = t.DisplayName; categories[t.LogicalName] = t.Category; }
 
             bool IsSelf(DataverseMetadataProvider.RelationshipInfo r) => cmp.Equals(r.RelatedEntity, table.LogicalName);
 
@@ -299,7 +481,8 @@ public partial class MainViewModel : ViewModelBase
                 .GroupBy(r => r.RelatedEntity, cmp)
                 .OrderBy(g => g.Key, cmp)
                 .Select(g => new ErNode(g.Key, displayNames.TryGetValue(g.Key, out var display) ? display : null, label,
-                    g.Select(r => r.Column).Where(c => c.Length > 0).Distinct(cmp).OrderBy(c => c, cmp).ToList()))
+                    g.Select(r => r.Column).Where(c => c.Length > 0).Distinct(cmp).OrderBy(c => c, cmp).ToList(),
+                    categories.TryGetValue(g.Key, out var category) ? category : DataverseMetadataProvider.TableCategory.Unknown))
                 .ToArray();
 
             var parents = Group(DataverseMetadataProvider.RelationshipKind.ManyToOne, "N:1");
@@ -310,10 +493,15 @@ public partial class MainViewModel : ViewModelBase
             var selfLines = relations.Where(IsSelf)
                 .Select(r => r.Kind == DataverseMetadataProvider.RelationshipKind.ManyToMany ? $"N:N 自关联 ({r.Column})" : $"自关联: {r.Column}")
                 .Distinct().OrderBy(s => s).ToList();
+            var selfRelations = relations.Where(IsSelf)
+                .Select(r => new ErSelfRelation(r.Kind == DataverseMetadataProvider.RelationshipKind.ManyToMany, r.Column))
+                .Distinct().OrderBy(r => r.Column, cmp).ToList();
 
             var primaryId = metadata.Entities.FirstOrDefault(e => cmp.Equals(e.LogicalName, table.LogicalName))?.PrimaryIdAttribute;
 
-            Er = new ErModel(table.LogicalName, table.DisplayName, primaryId, selfLines, parents, oneToMany.Concat(manyToMany).ToArray());
+            Er = new ErModel(table.LogicalName, table.DisplayName, primaryId, selfLines, parents, oneToMany.Concat(manyToMany).ToArray(),
+                table.Category, selfRelations);
+            OnPropertyChanged(nameof(HasEr));
             ErTitle = $"{table.LogicalName} · 引用 {parents.Length} 张表 (N:1) · 被 {oneToMany.Length} 张表引用 (1:N) · 多对多 {manyToMany.Length} 张 (N:N)";
             ErChanged?.Invoke();
         }

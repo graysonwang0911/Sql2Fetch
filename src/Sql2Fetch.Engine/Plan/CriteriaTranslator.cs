@@ -155,6 +155,9 @@ internal static class CriteriaTranslator
         {
             var c1 = schema.Resolve(lc);
             var c2 = schema.Resolve(rc);
+            // "x" 按 SQL 规则是列名;没有元数据校验时会悄悄变成列比较,这里提醒一下
+            foreach (var quoted in new[] { lc, rc }.Select(DoubleQuotedName).OfType<string>())
+                ctx.Warn($"双引号里的 \"{quoted}\" 被当作列名而不是字符串;如果想写字符串,请用单引号 '{quoted}'");
             var condition = NewCondition(c1, ComparisonOperator(type, comparison));
             condition.ValueOf = c1.Alias.Equals(c2.Alias, StringComparison.OrdinalIgnoreCase) ? c2.Attribute : $"{c2.Alias}.{c2.Attribute}";
             if (!c1.Alias.Equals(c2.Alias, StringComparison.OrdinalIgnoreCase))
@@ -177,6 +180,10 @@ internal static class CriteriaTranslator
                 _ => type
             };
         }
+
+        if (IsConstant(left) && IsConstant(right))
+            throw SqlTranslationException.NotSupported(comparison, "两边都是常量的条件(如 1 = 1)",
+                "FetchXML 的条件必须有一边是列,这类恒真 / 恒假的条件请直接去掉");
 
         var col = RequireColumn(left, schema);
 
@@ -244,6 +251,18 @@ internal static class CriteriaTranslator
             "FetchXML 只能直接比较列的值,例如 WHERE name = 'x'");
     }
 
+    private static bool IsConstant(ScalarExpression expression) => expression switch
+    {
+        ParenthesisExpression paren => IsConstant(paren.Expression),
+        UnaryExpression unary => IsConstant(unary.Expression),
+        Literal => true,
+        _ => false,
+    };
+
+    /// <summary>列引用是用双引号括起来的单段名字时返回这个名字,否则返回 null。</summary>
+    private static string? DoubleQuotedName(ColumnReferenceExpression column) =>
+        column.MultiPartIdentifier?.Identifiers is { Count: 1 } ids && ids[0].QuoteType == QuoteType.DoubleQuote ? ids[0].Value : null;
+
     private static FetchCondition NewCondition(ResolvedColumn col, string op) =>
         new() { Attribute = col.Attribute, Operator = op, EntityName = col.Alias };
 
@@ -264,6 +283,11 @@ internal static class CriteriaTranslator
                 return LiteralValue(pos.Expression);
             case VariableReference variable:
                 throw SqlTranslationException.NotSupported(variable, "变量", "请直接写字面量");
+            case ColumnReferenceExpression column:
+                throw SqlTranslationException.NotSupported(column, "这里的值不能是列",
+                    DoubleQuotedName(column) is { } quoted
+                        ? $"双引号里的 \"{quoted}\" 是列名;字符串请用单引号 '{quoted}'"
+                        : "IN / LIKE / BETWEEN 和函数参数的值只能是常量;列与列之间只能用 = <> > >= < <= 比较");
             default:
                 throw SqlTranslationException.NotSupported(expression, "表达式", "FetchXML 的 value 只能是字面量");
         }

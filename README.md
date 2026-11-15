@@ -24,8 +24,11 @@
 **浏览元数据**
 
 - 表清单：显示表名、类型、记录数，可搜索、按类型筛选、点表头排序
+- 表清单只在连接时加载一次；点清单上方的「刷新」才会重新读取环境里最新的表和记录数
 - 表结构：点击表名显示所有列的逻辑名、显示名、类型和选项值，可搜索列名
 - ER 图：以所选的表为中心，画出它引用的表（N:1）、引用它的表（1:N）和多对多的表（N:N）；点击图中的表可跳转过去
+- ER 图上每张表都标注表类型（业务表 / 配置表 / 系统表 / 中间表，按元数据推断，仅供参考）
+- ER 图导出：PNG 图片、Excel 表格（`.xlsx`，「表」和「关系」两张工作表），或 Mermaid 文本（存为 `.mmd` 文件 / 复制到剪贴板）；导出的是过滤后当前显示的内容
 
 **登录方式**
 
@@ -91,7 +94,7 @@ ORDER BY c.createdon DESC
 | 语法 | 说明 |
 |---|---|
 | `SELECT` 列、`*`、列别名 | |
-| `TOP`、`DISTINCT`、`OFFSET ... FETCH` | FetchXML 的 `top` 只接受 1–5000；`TOP` 超过 5000 时改为执行时翻页取够行数，`TOP 0` 只返回表头 |
+| `TOP`、`DISTINCT`、`OFFSET ... FETCH` | FetchXML 的 `top` 只接受 1–5000；`TOP` 超过 5000 时改为执行时翻页取够行数，`TOP 0` 只返回表头；`FETCH NEXT` 超过 5000 时同样改为执行时翻页 |
 | `WHERE` | `AND` / `OR` / `NOT`、比较运算、`IN`、`BETWEEN`、`LIKE`、`IS NULL` |
 | `JOIN` | `INNER`、`LEFT`、`RIGHT`（转成 `LEFT`），支持多层嵌套和额外的 `ON` 条件 |
 | 聚合 | `COUNT`、`SUM`、`AVG`、`MIN`、`MAX`，`GROUP BY` |
@@ -128,13 +131,14 @@ FetchXML 的表达能力比 SQL 小得多：它只能描述“从一张主表出
 | `PIVOT` / `UNPIVOT` | |
 | `ON` 里没有“左表列 = 右表列”的等值条件，如 `ON c.createdon > a.createdon`、`ON 1 = 1` | 必须有一个等值条件作为关联键 |
 | `ON` 里用 `OR`：`ON a.x = c.y OR c.z = 0` | |
-| `ON` 的附加条件引用了左表，如 `... AND a.statecode = 0`、`... AND c.createdon = a.createdon` | 附加条件只能用右表自己的列和常量；其余条件移到 `WHERE` |
+| `ON` 的附加条件引用了左表，如 `... AND a.statecode = 0` | 附加条件只能用右表自己的列和常量；其余条件移到 `WHERE` |
+| 多列联合关联：`ON a.x = c.y AND a.z = c.w` | 只能用一对列做关联；第二对列的条件移到 `WHERE` |
 | 带架构或数据库名的表名，如 `sales.account`、`db.dbo.account` | 直接写表的逻辑名；`dbo.account` 可以 |
 | `NOLOCK` 以外的表提示，如 `WITH (INDEX(...))` | |
 
 ### SELECT 列
 
-`SELECT` 里只能写列本身、`*`、`表别名.*`，以及聚合函数。下面这些都不行：
+`SELECT` 里只能写列本身、`*`、`表别名.*`、聚合函数，以及分组查询里的日期分组函数（`YEAR(col)`、`DATEPART(month, col)` 等，必须同时写在 `GROUP BY` 里）。下面这些都不行：
 
 | 写法 | 例子 |
 |---|---|
@@ -145,18 +149,20 @@ FetchXML 的表达能力比 SQL 小得多：它只能描述“从一张主表出
 | 窗口函数 | `ROW_NUMBER() OVER (...)`、`COUNT(*) OVER ()` |
 | 子查询列 | `SELECT name, (SELECT COUNT(*) FROM contact)` |
 | 含空格或符号的别名 | `name AS [my name]`（别名只能是字母、数字、下划线；中文可以） |
-| 三段以上的列名 | `a.b.c.name` |
+| 三段以上的列名 | `dbo.account.name`、`a.b.c.name`（只能写 `列名` 或 `表别名.列名`） |
 
 这些计算需要取回数据后自己处理。
 
 ### WHERE 条件
 
-条件只能是“列 和 常量比较”或“列 和 列比较”。
+条件只能是“列 和 常量比较”或“列 和 列比较”。列和列比较只能用 `=`、`<>`、`>`、`>=`、`<`、`<=`；`IN`、`LIKE`、`BETWEEN` 的值只能是常量。
 
 | 写法 | 例子 | 替代办法 |
 |---|---|---|
 | 对列做函数或运算后再比较 | `LEN(name) > 3`、`YEAR(createdon) = 2024`、`revenue * 2 > 100` | 日期范围用 `BETWEEN` 或下面的日期函数 |
-| 比较的值是表达式 | `revenue > 10 + 5` | 先算好再写常量 |
+| 比较的值是表达式或类型转换 | `revenue > 10 + 5`、`createdon >= CAST('2024-01-01' AS date)` | 先算好再写常量；日期直接写 `'2024-01-01'` |
+| `IN` / `LIKE` / `BETWEEN` 的值是列 | `name IN (telephone1, 'x')`、`name LIKE telephone1`、`revenue BETWEEN numberofemployees AND 100` | |
+| 两边都是常量的条件 | `WHERE 1 = 1 AND statecode = 0` | 去掉这个条件 |
 | SQL 的日期函数 | `createdon > GETDATE()`、`DATEADD(day, -7, GETDATE())` | 用 FetchXML 的日期函数：`createdon = lastxdays(7)`、`today()`、`thismonth()` 等 |
 | 子查询 | `IN (SELECT ...)`、`EXISTS (...)`、`revenue > (SELECT AVG(...))` | 改写成 `JOIN` |
 | `= NULL` / `<> NULL` | | 用 `IS NULL` / `IS NOT NULL` |
@@ -176,7 +182,7 @@ FetchXML 的表达能力比 SQL 小得多：它只能描述“从一张主表出
 | `GROUP BY ROLLUP / CUBE / GROUPING SETS` | |
 | 按表达式分组：`GROUP BY UPPER(name)` | 只能按列，或按日期的一部分分组 |
 | `DATEPART` 的 hour、minute 等 | 只支持 year、quarter、month、week、day、fiscalperiod、fiscalyear |
-| `HAVING` 里的 `LIKE`、子查询、运算，如 `HAVING COUNT(*) * 2 > 4` | `HAVING` 只能拿聚合函数、分组列或 `SELECT` 别名和常量比较 |
+| `HAVING` 里的 `LIKE`、子查询、运算，如 `HAVING COUNT(*) * 2 > 4` | `HAVING` 只能拿聚合函数、分组列或 `SELECT` 别名和常量比较；比较运算、`IN`、`BETWEEN`、`IS NULL` 和 `AND` / `OR` / `NOT` 都可以用 |
 | 没有聚合也没有 `GROUP BY` 却写了 `HAVING` | |
 
 ### ORDER BY、TOP 和分页
@@ -201,6 +207,11 @@ FetchXML 的表达能力比 SQL 小得多：它只能描述“从一张主表出
 - `OPTION (...)` 查询提示
 - `TABLESAMPLE (...)`
 - `COLLATE ...`
+
+还有两种写法不会报错，但意思和你想的不一样：
+
+- **双引号不是字符串**：`WHERE name = "x"` 里的 `"x"` 按 SQL 规则是列名，会被翻译成“和名为 x 的列比较”。字符串要用单引号 `'x'`。离线模式下只给出警告；连接后因为会校验列名，通常会直接报“不存在列”。
+- **`TRUE` / `FALSE` 不是常量**：`WHERE statecode = TRUE` 里的 `TRUE` 同样被当成列名。布尔值请写 `1` / `0`。
 
 另外有两点行为和 SQL Server 不完全一样：
 

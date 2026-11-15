@@ -66,7 +66,12 @@
 
         <!-- 左侧:表清单 -->
         <Grid Grid.Row="1" Grid.RowSpan="3" Grid.Column="0" RowDefinitions="Auto,Auto,*,Auto">
-            <TextBlock Grid.Row="0" Classes="pane-title" Text="表" />
+            <Grid Grid.Row="0" ColumnDefinitions="*,Auto">
+                <TextBlock Grid.Column="0" Classes="pane-title" Text="表" VerticalAlignment="Center" />
+                <Button Grid.Column="1" Content="⟳ 刷新" Padding="8,2" FontSize="12" Margin="0,0,0,4"
+                        Command="{Binding RefreshTablesCommand}" IsEnabled="{Binding CanRefreshTables}"
+                        ToolTip.Tip="重新读取环境里最新的表清单和各表记录数(不点刷新不会自动更新)" />
+            </Grid>
             <Grid Grid.Row="1" ColumnDefinitions="*,Auto" Margin="0,0,0,6">
                 <TextBox Grid.Column="0" Text="{Binding TableFilter}" PlaceholderText="搜索表名..." />
                 <ComboBox Grid.Column="1" SelectedIndex="{Binding TableTypeIndex}" Margin="6,0,0,0" MinWidth="92"
@@ -216,10 +221,21 @@
             </TabItem>
             <TabItem Header="ER 图">
                 <Grid RowDefinitions="Auto,*">
-                    <Grid Grid.Row="0" ColumnDefinitions="240,*" Margin="0,0,0,6">
+                    <Grid Grid.Row="0" ColumnDefinitions="240,*,Auto" Margin="0,0,0,6">
                         <TextBox Grid.Column="0" Text="{Binding ErFilter}" PlaceholderText="过滤关联表 / 列名..." />
                         <SelectableTextBlock Grid.Column="1" Text="{Binding ErTitle}" FontSize="12" Opacity="0.7"
                                              Margin="10,0,0,0" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                        <Button Grid.Column="2" Content="导出 ▾" Padding="10,4" FontSize="12" Margin="10,0,0,0"
+                                IsEnabled="{Binding HasEr}" ToolTip.Tip="导出当前 ER 图(按过滤后的内容)">
+                            <Button.Flyout>
+                                <MenuFlyout Placement="BottomEdgeAlignedRight">
+                                    <MenuItem x:Name="ErExportPngItem" Header="导出为 PNG 图片..." />
+                                    <MenuItem x:Name="ErExportExcelItem" Header="导出为 Excel 表格 (.xlsx)..." />
+                                    <MenuItem x:Name="ErExportMermaidItem" Header="导出为 Mermaid 文件 (.mmd)..." />
+                                    <MenuItem x:Name="ErCopyMermaidItem" Header="复制 Mermaid 到剪贴板" />
+                                </MenuFlyout>
+                            </Button.Flyout>
+                        </Button>
                     </Grid>
                     <Border Grid.Row="1" Classes="pane">
                         <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">

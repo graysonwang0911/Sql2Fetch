@@ -7,6 +7,7 @@ using Avalonia.Input.Platform;
 using Avalonia.Interactivity;
 using Avalonia.Layout;
 using Avalonia.Media;
+using Avalonia.Platform.Storage;
 using System.Linq;
 using AvaloniaEdit.CodeCompletion;
 using AvaloniaEdit.Highlighting;
@@ -48,6 +49,17 @@ public partial class MainWindow : Window
         {
             if (Clipboard is not null && _vm is not null && !string.IsNullOrEmpty(_vm.DeviceCode))
                 await Clipboard.SetTextAsync(_vm.DeviceCode);
+        };
+
+        ErExportPngItem.Click += async (_, _) => await ExportErPngAsync();
+        ErExportExcelItem.Click += async (_, _) => await ExportErExcelAsync();
+        ErExportMermaidItem.Click += async (_, _) => await ExportErMermaidAsync();
+        ErCopyMermaidItem.Click += async (_, _) =>
+        {
+            if (_vm?.BuildErMermaid() is not { } mermaid || Clipboard is null) return;
+            await Clipboard.SetTextAsync(mermaid);
+            _vm.IsError = false;
+            _vm.Status = "已把 ER 图的 Mermaid 文本复制到剪贴板";
         };
 
         DataContextChanged += (_, _) =>
@@ -251,14 +263,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        var filter = (_vm!.ErFilter ?? "").Trim();
-        bool Match(MainViewModel.ErNode n) => filter.Length == 0
-            || n.LogicalName.Contains(filter, StringComparison.OrdinalIgnoreCase)
-            || (n.DisplayName?.Contains(filter, StringComparison.OrdinalIgnoreCase) ?? false)
-            || n.Columns.Any(c => c.Contains(filter, StringComparison.OrdinalIgnoreCase));
-
-        var parents = er.Parents.Where(Match).ToList();
-        var children = er.Children.Where(Match).ToList();
+        var (parents, children) = _vm!.FilteredErNodes();
 
         var leftX = ErMargin;
         var centerX = leftX + ErBoxWidth + ErGapX;
@@ -273,7 +278,7 @@ public partial class MainWindow : Window
         var centerLines = new System.Collections.Generic.List<string>();
         if (!string.IsNullOrEmpty(er.PrimaryId)) centerLines.Add("主键: " + er.PrimaryId);
         centerLines.AddRange(er.SelfLines);
-        var (centerBox, centerHeight) = MakeErBox(er.LogicalName, er.DisplayName, null, centerLines, int.MaxValue, isCenter: true);
+        var (centerBox, centerHeight) = MakeErBox(er.LogicalName, er.DisplayName, null, er.Category, centerLines, int.MaxValue, isCenter: true);
         var centerMidY = top + centerHeight / 2;
 
         // 先画线再放框,线压在框下面
@@ -340,8 +345,9 @@ public partial class MainWindow : Window
 
     private (Control Box, double Height) MakeErNodeBox(MainViewModel.ErNode node, string columnsCaption)
     {
-        var (box, height) = MakeErBox(node.LogicalName, node.DisplayName, node.Kind, node.Columns, ErMaxLines, isCenter: false);
-        ToolTip.SetTip(box, $"{node.LogicalName} ({node.Kind})\n{columnsCaption}: {string.Join(", ", node.Columns)}\n点击查看这张表");
+        var (box, height) = MakeErBox(node.LogicalName, node.DisplayName, node.Kind, node.Category, node.Columns, ErMaxLines, isCenter: false);
+        var type = MainViewModel.CategoryName(node.Category);
+        ToolTip.SetTip(box, $"{node.LogicalName} ({node.Kind}){(type.Length == 0 ? "" : " · " + type)}\n{columnsCaption}: {string.Join(", ", node.Columns)}\n点击查看这张表");
         var target = node.LogicalName;
         box.PointerPressed += (_, e) =>
         {
@@ -353,19 +359,36 @@ public partial class MainWindow : Window
 
     /// <summary>画一个表框。高度按行数算好并显式指定,这样不用等布局就能排版和连线。</summary>
     private static (Border Box, double Height) MakeErBox(string title, string? subtitle, string? badge,
+        Sql2Fetch.Dataverse.DataverseMetadataProvider.TableCategory category,
         System.Collections.Generic.IReadOnlyList<string> lines, int maxLines, bool isCenter)
     {
         const double titleHeight = 19, subtitleHeight = 15, lineHeight = 15, padding = 7;
         var panel = new StackPanel();
         var height = padding * 2;
 
-        var titleRow = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto"), Height = titleHeight };
+        var titleRow = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto,Auto"), Height = titleHeight };
         titleRow.Children.Add(new TextBlock { Text = title, FontSize = 13, FontWeight = FontWeight.SemiBold, TextTrimming = TextTrimming.CharacterEllipsis });
         if (badge is not null)
         {
             var badgeText = new TextBlock { Text = badge, FontSize = 10, Opacity = 0.6, Margin = new Avalonia.Thickness(6, 2, 0, 0) };
-            Grid.SetColumn(badgeText, 1);
+            Grid.SetColumn(badgeText, 2);
             titleRow.Children.Add(badgeText);
+        }
+        // 表类型标签:业务表 / 配置表 / 系统表 / 中间表(白字配实色底,深浅主题下都看得清)
+        var categoryName = MainViewModel.CategoryName(category);
+        if (categoryName.Length > 0)
+        {
+            var pill = new Border
+            {
+                Background = ErCategoryBrush(category),
+                CornerRadius = new Avalonia.CornerRadius(3),
+                Padding = new Avalonia.Thickness(5, 0),
+                Margin = new Avalonia.Thickness(6, 1, 0, 2),
+                VerticalAlignment = VerticalAlignment.Center,
+                Child = new TextBlock { Text = categoryName, FontSize = 10, Foreground = Brushes.White, VerticalAlignment = VerticalAlignment.Center },
+            };
+            Grid.SetColumn(pill, 1);
+            titleRow.Children.Add(pill);
         }
         panel.Children.Add(titleRow);
         height += titleHeight;
@@ -402,6 +425,112 @@ public partial class MainWindow : Window
         };
         box.Classes.Add(isCenter ? "er-center" : "er-box");
         return (box, height);
+    }
+
+    private static readonly IBrush ErBusinessBrush = new SolidColorBrush(Color.Parse("#2563EB"));
+    private static readonly IBrush ErConfigBrush = new SolidColorBrush(Color.Parse("#047857"));
+    private static readonly IBrush ErSystemBrush = new SolidColorBrush(Color.Parse("#6B7280"));
+    private static readonly IBrush ErIntersectBrush = new SolidColorBrush(Color.Parse("#B45309"));
+
+    private static IBrush ErCategoryBrush(Sql2Fetch.Dataverse.DataverseMetadataProvider.TableCategory category) => category switch
+    {
+        Sql2Fetch.Dataverse.DataverseMetadataProvider.TableCategory.Business => ErBusinessBrush,
+        Sql2Fetch.Dataverse.DataverseMetadataProvider.TableCategory.Config => ErConfigBrush,
+        Sql2Fetch.Dataverse.DataverseMetadataProvider.TableCategory.Intersect => ErIntersectBrush,
+        _ => ErSystemBrush,
+    };
+
+    // ---------- ER 图导出 ----------
+
+    private async System.Threading.Tasks.Task<Avalonia.Platform.Storage.IStorageFile?> PickErExportFileAsync(string typeName, string extension)
+    {
+        if (_vm?.Er is not { } er) return null;
+        return await StorageProvider.SaveFilePickerAsync(new Avalonia.Platform.Storage.FilePickerSaveOptions
+        {
+            Title = "导出 ER 图",
+            SuggestedFileName = $"{er.LogicalName}-er.{extension}",
+            DefaultExtension = extension,
+            FileTypeChoices = new[] { new Avalonia.Platform.Storage.FilePickerFileType(typeName) { Patterns = new[] { "*." + extension } } },
+        });
+    }
+
+    private void ReportErExport(Avalonia.Platform.Storage.IStorageFile file)
+    {
+        if (_vm is null) return;
+        _vm.IsError = false;
+        _vm.Status = "ER 图已导出到 " + (file.TryGetLocalPath() ?? file.Name);
+    }
+
+    private void ReportErExportError(Exception ex)
+    {
+        if (_vm is null) return;
+        _vm.IsError = true;
+        _vm.Status = "导出 ER 图失败: " + ex.Message;
+    }
+
+    /// <summary>把整张 ER 图(包括滚动区域外的部分)渲染成 2 倍分辨率的 PNG。</summary>
+    private async System.Threading.Tasks.Task ExportErPngAsync()
+    {
+        if (_vm?.Er is null || ErCanvas.Width <= 0 || ErCanvas.Height <= 0) return;
+        try
+        {
+            var file = await PickErExportFileAsync("PNG 图片", "png");
+            if (file is null) return;
+
+            const double scale = 2;
+            var pixelSize = new Avalonia.PixelSize((int)Math.Ceiling(ErCanvas.Width * scale), (int)Math.Ceiling(ErCanvas.Height * scale));
+            using var bitmap = new Avalonia.Media.Imaging.RenderTargetBitmap(pixelSize, new Avalonia.Vector(96 * scale, 96 * scale));
+
+            // 画布本身是透明的,导出时临时铺上窗口背景色,否则深色主题下浅色文字落在透明底上看不清
+            var oldBackground = ErCanvas.Background;
+            ErCanvas.Background = Background
+                ?? (ActualThemeVariant == Avalonia.Styling.ThemeVariant.Dark ? new SolidColorBrush(Color.Parse("#1E1E1E")) : Brushes.White);
+            try { bitmap.Render(ErCanvas); }
+            finally { ErCanvas.Background = oldBackground; }
+
+            await using (var stream = await file.OpenWriteAsync())
+                bitmap.Save(stream, new Avalonia.Media.Imaging.PngBitmapEncoderOptions());
+            ReportErExport(file);
+        }
+        catch (Exception ex)
+        {
+            ReportErExportError(ex);
+        }
+    }
+
+    private async System.Threading.Tasks.Task ExportErExcelAsync()
+    {
+        if (_vm?.BuildErSheets() is not { } sheets) return;
+        try
+        {
+            var file = await PickErExportFileAsync("Excel 工作簿", "xlsx");
+            if (file is null) return;
+            await using (var stream = await file.OpenWriteAsync())
+                Sql2Fetch.App.XlsxWriter.Write(stream, sheets);
+            ReportErExport(file);
+        }
+        catch (Exception ex)
+        {
+            ReportErExportError(ex);
+        }
+    }
+
+    private async System.Threading.Tasks.Task ExportErMermaidAsync()
+    {
+        if (_vm?.BuildErMermaid() is not { } mermaid) return;
+        try
+        {
+            var file = await PickErExportFileAsync("Mermaid 图", "mmd");
+            if (file is null) return;
+            await using (var stream = await file.OpenWriteAsync())
+            await using (var writer = new System.IO.StreamWriter(stream, new System.Text.UTF8Encoding(false)))
+                await writer.WriteAsync(mermaid);
+            ReportErExport(file);
+        }
+        catch (Exception ex)
+        {
+            ReportErExportError(ex);
+        }
     }
 
     private void RebuildColumns(string[] columns)
