@@ -1,5 +1,17 @@
 # Sql2Fetch
 
+**English** · A cross-platform desktop tool for querying Microsoft Dataverse (Dynamics 365 / Power Platform) with SQL.
+
+- **SQL to FetchXML converter** — write a `SELECT` and get the FetchXML; works offline too
+- **Run queries** against your environment and browse the results (sign in with browser OAuth / MFA, username + password, or device code)
+- **Metadata browser** — table list with record counts and table types, column schema with option set values
+- **ER diagram** for any table, exportable to PNG, Excel (`.xlsx`) or Mermaid
+- Built with .NET 10 and [Avalonia](https://avaloniaui.net/) for macOS, Windows and Linux (so far only used on macOS). Self-contained builds are on the [Releases](https://github.com/graysonwang0911/Sql2Fetch/releases) page — no .NET install needed
+
+The UI and the rest of this README are in Chinese.
+
+---
+
 用 SQL 查询 Microsoft Dataverse（Dynamics 365 / Power Platform）的桌面工具。
 
 写一条 `SELECT`，Sql2Fetch 把它翻译成 FetchXML，并可以直接在你的环境上执行、查看结果。同时它也是一个轻量的 Dataverse 元数据浏览器：表清单、表结构、ER 图都能看。
