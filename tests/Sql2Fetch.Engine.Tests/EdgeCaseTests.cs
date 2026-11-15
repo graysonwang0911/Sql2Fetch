@@ -120,6 +120,17 @@ public class EdgeCaseTests
         Assert.Contains("大于 0", ex.Message);
     }
 
+    // ---- 其他应当正常报错的写法 ----
+
+    [Theory]
+    [InlineData("SELECT *, COUNT(*) FROM account GROUP BY name", "*")]
+    [InlineData("SELECT TOP 5 name FROM account ORDER BY name OFFSET 10 ROWS FETCH NEXT 5 ROWS ONLY", "不能同时使用")]
+    public void ReportsARegularError(string sql, string messagePart)
+    {
+        var ex = Assert.Throws<SqlTranslationException>(() => Convert(sql));
+        Assert.Contains(messagePart, ex.Message);
+    }
+
     // ---- 重复列 ----
 
     [Fact]

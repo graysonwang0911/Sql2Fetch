@@ -100,13 +100,112 @@ ORDER BY c.createdon DESC
 | `ORDER BY` | 聚合查询里可以直接写 `ORDER BY COUNT(*) DESC` |
 | FetchXML 运算符函数 | 如 `createdon = lastxdays(7)`、`ownerid = eq_userid()`、`thismonth()` |
 
-**不支持：**
+转换不了的写法见下一节。
 
-- `INSERT` / `UPDATE` / `DELETE`（本工具只读）
-- 子查询、`UNION`、`FULL OUTER JOIN`
-- 列上的函数和运算，例如 `LEN(name) > 3`、`name + 'x'`
+## 不能转换的 SQL 语法
 
-遇到不支持的写法时，状态栏会说明原因和出错位置。
+FetchXML 的表达能力比 SQL 小得多：它只能描述“从一张主表出发，通过等值关联带上其他表，用列和常量做比较”的查询，没有子查询，也不能对列做运算。所以下面这些写法无法转换。遇到时不会生成 FetchXML，状态栏会说明原因，并在编辑器里选中出错的位置。
+
+### 语句类型
+
+| 写法 | 说明 |
+|---|---|
+| `INSERT` / `UPDATE` / `DELETE` / `MERGE`、建表等 | 本工具只读，只接受 `SELECT` |
+| 一次写多条语句 | 一次只能翻译一条，`DECLARE` 加 `SELECT` 也算两条 |
+| `WITH ... AS (...)`（CTE） | |
+| `UNION` / `UNION ALL` / `INTERSECT` / `EXCEPT` | 分开查询 |
+| 没有 `FROM` 的查询，如 `SELECT 1`、`SELECT GETDATE()` | |
+| 变量，如 `WHERE statecode = @n`、`TOP (@n)` | 直接写常量 |
+
+### FROM 和 JOIN
+
+| 写法 | 说明 |
+|---|---|
+| `FULL OUTER JOIN` | FetchXML 只有内连接和左外连接（`RIGHT JOIN` 会自动改写成 `LEFT JOIN`） |
+| `CROSS JOIN`、`CROSS APPLY` / `OUTER APPLY` | |
+| 逗号连接多表：`FROM account a, contact c` | 改用 `JOIN ... ON` |
+| 派生表：`FROM (SELECT ...) x` | |
+| `PIVOT` / `UNPIVOT` | |
+| `ON` 里没有“左表列 = 右表列”的等值条件，如 `ON c.createdon > a.createdon`、`ON 1 = 1` | 必须有一个等值条件作为关联键 |
+| `ON` 里用 `OR`：`ON a.x = c.y OR c.z = 0` | |
+| `ON` 的附加条件引用了左表，如 `... AND a.statecode = 0`、`... AND c.createdon = a.createdon` | 附加条件只能用右表自己的列和常量；其余条件移到 `WHERE` |
+| 带架构或数据库名的表名，如 `sales.account`、`db.dbo.account` | 直接写表的逻辑名；`dbo.account` 可以 |
+| `NOLOCK` 以外的表提示，如 `WITH (INDEX(...))` | |
+
+### SELECT 列
+
+`SELECT` 里只能写列本身、`*`、`表别名.*`，以及聚合函数。下面这些都不行：
+
+| 写法 | 例子 |
+|---|---|
+| 运算和拼接 | `revenue * 2`、`name + 'x'` |
+| 常量列 | `SELECT 'x' AS c, name` |
+| `CASE WHEN ...` | |
+| 标量函数 | `UPPER(name)`、`ISNULL(name, '')`、`CAST(...)`、`CONVERT(...)` |
+| 窗口函数 | `ROW_NUMBER() OVER (...)`、`COUNT(*) OVER ()` |
+| 子查询列 | `SELECT name, (SELECT COUNT(*) FROM contact)` |
+| 含空格或符号的别名 | `name AS [my name]`（别名只能是字母、数字、下划线；中文可以） |
+| 三段以上的列名 | `a.b.c.name` |
+
+这些计算需要取回数据后自己处理。
+
+### WHERE 条件
+
+条件只能是“列 和 常量比较”或“列 和 列比较”。
+
+| 写法 | 例子 | 替代办法 |
+|---|---|---|
+| 对列做函数或运算后再比较 | `LEN(name) > 3`、`YEAR(createdon) = 2024`、`revenue * 2 > 100` | 日期范围用 `BETWEEN` 或下面的日期函数 |
+| 比较的值是表达式 | `revenue > 10 + 5` | 先算好再写常量 |
+| SQL 的日期函数 | `createdon > GETDATE()`、`DATEADD(day, -7, GETDATE())` | 用 FetchXML 的日期函数：`createdon = lastxdays(7)`、`today()`、`thismonth()` 等 |
+| 子查询 | `IN (SELECT ...)`、`EXISTS (...)`、`revenue > (SELECT AVG(...))` | 改写成 `JOIN` |
+| `= NULL` / `<> NULL` | | 用 `IS NULL` / `IS NOT NULL` |
+| `LIKE ... ESCAPE` | | |
+| 全文检索 | `CONTAINS(name, 'x')`、`FREETEXT(...)` | |
+| FetchXML 日期函数配 `=` 以外的运算符 | `createdon > lastxdays(7)` | 只能写 `createdon = lastxdays(7)` |
+| 对 FetchXML 日期函数取反 | `NOT createdon = lastxdays(7)` | |
+
+### 聚合、GROUP BY 和 HAVING
+
+| 写法 | 说明 |
+|---|---|
+| `COUNT` / `SUM` / `AVG` / `MIN` / `MAX` 以外的聚合函数，如 `STRING_AGG` | |
+| 聚合函数的参数是表达式：`SUM(revenue * 2)` | 参数只能是列，或 `COUNT(*)` |
+| 聚合查询里用 `*`：`SELECT *, COUNT(*) ...` | 写出具体的列 |
+| `SELECT` 里的非聚合列没有出现在 `GROUP BY` 里 | 和标准 SQL 的要求一样 |
+| `GROUP BY ROLLUP / CUBE / GROUPING SETS` | |
+| 按表达式分组：`GROUP BY UPPER(name)` | 只能按列，或按日期的一部分分组 |
+| `DATEPART` 的 hour、minute 等 | 只支持 year、quarter、month、week、day、fiscalperiod、fiscalyear |
+| `HAVING` 里的 `LIKE`、子查询、运算，如 `HAVING COUNT(*) * 2 > 4` | `HAVING` 只能拿聚合函数、分组列或 `SELECT` 别名和常量比较 |
+| 没有聚合也没有 `GROUP BY` 却写了 `HAVING` | |
+
+### ORDER BY、TOP 和分页
+
+| 写法 | 说明 |
+|---|---|
+| 按序号排序：`ORDER BY 1` | 写列名 |
+| 按表达式排序：`ORDER BY LEN(name)`、`ORDER BY revenue * 2` | |
+| 聚合查询里按未分组的列排序 | 只能按分组列、聚合函数或 `SELECT` 别名排序 |
+| `TOP ... PERCENT`、`TOP ... WITH TIES` | |
+| `TOP` 和 `OFFSET ... FETCH` 同时使用 | 分页只用 `OFFSET ... FETCH` |
+| 只有 `OFFSET` 没有 `FETCH NEXT` | |
+| `OFFSET` 不是 `FETCH NEXT` 行数的整数倍，如 `OFFSET 7 ROWS FETCH NEXT 5 ROWS` | FetchXML 只能整页取，例如 `OFFSET 5`、`OFFSET 10` |
+| `FETCH NEXT 0 ROWS` | |
+
+### 不报错但会被忽略的写法
+
+下面这些子句不会报错，但对生成的 FetchXML **没有任何作用**，容易让人误以为生效了：
+
+- `SELECT ... INTO #temp`：不会创建任何表，只是普通查询
+- `FOR JSON` / `FOR XML`
+- `OPTION (...)` 查询提示
+- `TABLESAMPLE (...)`
+- `COLLATE ...`
+
+另外有两点行为和 SQL Server 不完全一样：
+
+- **`LIKE` 的通配符**原样交给 Dataverse 处理。`%` 和 `_` 可以放心用，`[abc]` 这类字符集写法能否生效取决于 Dataverse，本工具不做转换。
+- **跨表的列比较**（如 `WHERE a.revenue > c.statecode`）可以转换，但需要较新版本的 Dataverse 才能执行，翻译时会给出警告。
 
 ## 几点说明
 

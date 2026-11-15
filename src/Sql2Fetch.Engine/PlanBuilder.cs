@@ -168,6 +168,8 @@ internal sealed class PlanBuilder
             for (var i = 0; i < selectColumns.Count; i++)
             {
                 var sc = selectColumns[i];
+                if (sc.Expression is ColumnReferenceExpression { ColumnType: ColumnType.Wildcard })
+                    throw new SqlTranslationException("聚合查询不能使用 *", spec, "请写出 GROUP BY 的列和聚合函数");
                 if (sc.Expression is FunctionCall f && AggregateFunctions.Contains(f.FunctionName.Value)) continue;
                 if (usedNames.Add(sc.OutputName)) continue;
                 if (sc.ExplicitAlias is not null)
@@ -282,6 +284,8 @@ internal sealed class PlanBuilder
         {
             if (spec.TopRowFilter.Percent) throw SqlTranslationException.NotSupported(spec.TopRowFilter, "TOP ... PERCENT");
             if (spec.TopRowFilter.WithTies) throw SqlTranslationException.NotSupported(spec.TopRowFilter, "TOP ... WITH TIES");
+            if (spec.OffsetClause is not null)
+                throw new SqlTranslationException("TOP 和 OFFSET/FETCH 不能同时使用", spec.TopRowFilter, "分页请只用 OFFSET ... FETCH NEXT");
             var top = IntLiteral(spec.TopRowFilter.Expression);
 
             if (HavingPredicate is not null)
