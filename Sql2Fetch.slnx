@@ -1,0 +1,10 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Sql2Fetch.App/Sql2Fetch.App.csproj" />
+    <Project Path="src/Sql2Fetch.Dataverse/Sql2Fetch.Dataverse.csproj" />
+    <Project Path="src/Sql2Fetch.Engine/Sql2Fetch.Engine.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Sql2Fetch.Engine.Tests/Sql2Fetch.Engine.Tests.csproj" />
+  </Folder>
+</Solution>

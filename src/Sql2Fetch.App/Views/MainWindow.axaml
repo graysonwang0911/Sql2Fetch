@@ -1,0 +1,249 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:Sql2Fetch.App.ViewModels"
+        xmlns:ae="using:AvaloniaEdit"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        mc:Ignorable="d" d:DesignWidth="1200" d:DesignHeight="800"
+        x:Class="Sql2Fetch.App.Views.MainWindow"
+        x:DataType="vm:MainViewModel"
+        Icon="/Assets/avalonia-logo.ico"
+        Width="1200" Height="800"
+        Title="Sql2Fetch — SQL → FetchXML">
+
+    <Design.DataContext>
+        <vm:MainViewModel />
+    </Design.DataContext>
+
+    <Window.Styles>
+        <Style Selector="Button.toolbar">
+            <Setter Property="Padding" Value="12,6" />
+            <Setter Property="Margin" Value="0,0,8,0" />
+        </Style>
+        <Style Selector="TextBlock.pane-title">
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Opacity" Value="0.7" />
+            <Setter Property="Margin" Value="4,0,0,4" />
+        </Style>
+        <Style Selector="Border.pane">
+            <Setter Property="BorderBrush" Value="{DynamicResource SystemControlForegroundBaseLowBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="4" />
+        </Style>
+        <Style Selector="Border.er-box">
+            <Setter Property="Background" Value="{DynamicResource SystemControlBackgroundAltHighBrush}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource SystemControlForegroundBaseLowBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="5" />
+            <Setter Property="Cursor" Value="Hand" />
+        </Style>
+        <Style Selector="Border.er-box:pointerover">
+            <Setter Property="BorderBrush" Value="#3B82F6" />
+        </Style>
+        <Style Selector="Border.er-center">
+            <Setter Property="Background" Value="{DynamicResource SystemControlBackgroundAltHighBrush}" />
+            <Setter Property="BorderBrush" Value="#3B82F6" />
+            <Setter Property="BorderThickness" Value="2" />
+            <Setter Property="CornerRadius" Value="5" />
+        </Style>
+        <Style Selector="Button.col-header">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="CornerRadius" Value="0" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Padding" Value="14,5" />
+        </Style>
+        <Style Selector="TabControl.bottom TabItem">
+            <Setter Property="FontSize" Value="13" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="MinHeight" Value="26" />
+            <Setter Property="Padding" Value="4,0,12,2" />
+        </Style>
+    </Window.Styles>
+
+    <Grid RowDefinitions="Auto,*,4,320,Auto" ColumnDefinitions="310,4,*" Margin="12">
+
+        <!-- 左侧:表清单 -->
+        <Grid Grid.Row="1" Grid.RowSpan="3" Grid.Column="0" RowDefinitions="Auto,Auto,*,Auto">
+            <TextBlock Grid.Row="0" Classes="pane-title" Text="表" />
+            <Grid Grid.Row="1" ColumnDefinitions="*,Auto" Margin="0,0,0,6">
+                <TextBox Grid.Column="0" Text="{Binding TableFilter}" PlaceholderText="搜索表名..." />
+                <ComboBox Grid.Column="1" SelectedIndex="{Binding TableTypeIndex}" Margin="6,0,0,0" MinWidth="92"
+                          VerticalAlignment="Stretch" ToolTip.Tip="按表类型筛选(类型按元数据推断,仅供参考)">
+                    <ComboBoxItem Content="全部类型" />
+                    <ComboBoxItem Content="业务" />
+                    <ComboBoxItem Content="配置" />
+                    <ComboBoxItem Content="系统" />
+                    <ComboBoxItem Content="中间表" />
+                </ComboBox>
+            </Grid>
+            <Border Grid.Row="2" Classes="pane">
+              <Grid RowDefinitions="Auto,*">
+                <!-- 表头:点击排序 -->
+                <Border Grid.Row="0" BorderThickness="0,0,0,1"
+                        BorderBrush="{DynamicResource SystemControlForegroundBaseLowBrush}">
+                    <Grid ColumnDefinitions="*,Auto,Auto">
+                        <Button Grid.Column="1" Classes="col-header" Content="{Binding TypeHeader}"
+                                Command="{Binding SortByTypeCommand}" Width="62" Padding="0,5"
+                                HorizontalContentAlignment="Center" ToolTip.Tip="点击按类型排序" />
+                        <Button Grid.Column="0" Classes="col-header" Content="{Binding NameHeader}"
+                                Command="{Binding SortByNameCommand}" HorizontalAlignment="Stretch"
+                                HorizontalContentAlignment="Left" ToolTip.Tip="点击按表名排序" />
+                        <Button Grid.Column="2" Classes="col-header" Content="{Binding CountHeader}"
+                                Command="{Binding SortByCountCommand}" MinWidth="76"
+                                HorizontalContentAlignment="Right" ToolTip.Tip="点击按件数排序" />
+                    </Grid>
+                </Border>
+                <ListBox Grid.Row="1" x:Name="TableList" ItemsSource="{Binding Tables}" SelectionMode="Single"
+                         SelectedItem="{Binding SelectedTable}"
+                         ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                    <ListBox.Styles>
+                        <Style Selector="ListBoxItem">
+                            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                        </Style>
+                    </ListBox.Styles>
+                    <ListBox.ItemTemplate>
+                        <DataTemplate x:DataType="vm:MainViewModel+TableItem">
+                            <Grid ColumnDefinitions="*,Auto,Auto" Margin="2,1" Background="Transparent"
+                                  ToolTip.Tip="{Binding LogicalName}">
+                                <StackPanel Grid.Column="0">
+                                    <TextBlock Text="{Binding Title}" TextTrimming="CharacterEllipsis" />
+                                    <TextBlock Text="{Binding Subtitle}" FontSize="11" Opacity="0.6" TextTrimming="CharacterEllipsis"
+                                               IsVisible="{Binding Subtitle, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+                                </StackPanel>
+                                <TextBlock Grid.Column="1" Text="{Binding CategoryLabel}" FontSize="11" Opacity="0.75"
+                                           VerticalAlignment="Center" Width="46" TextAlignment="Center" Margin="8,0,0,0"
+                                           ToolTip.Tip="{Binding CategoryTip}" />
+                                <TextBlock Grid.Column="2" Text="{Binding RecordCountText}" FontSize="11" Opacity="0.6"
+                                           VerticalAlignment="Center" Margin="8,0,0,0" MinWidth="56" TextAlignment="Right"
+                                           ToolTip.Tip="记录数(Dataverse 定期刷新的统计值,不是实时数字)" />
+                            </Grid>
+                        </DataTemplate>
+                    </ListBox.ItemTemplate>
+                </ListBox>
+              </Grid>
+            </Border>
+            <TextBlock Grid.Row="3" Text="{Binding TableCountLabel}" FontSize="11" Opacity="0.6" Margin="4,4,0,0" />
+        </Grid>
+        <GridSplitter Grid.Row="1" Grid.RowSpan="3" Grid.Column="1" ResizeDirection="Columns" Background="Transparent" />
+
+        <!-- 工具栏 -->
+        <Grid Grid.Row="0" Grid.ColumnSpan="3" ColumnDefinitions="Auto,*,Auto,Auto,Auto,Auto,Auto,Auto,Auto" Margin="0,0,0,10">
+            <TextBlock Grid.Column="0" Text="环境:" VerticalAlignment="Center" Margin="0,0,8,0" />
+            <TextBox Grid.Column="1" Text="{Binding EnvironmentUrl}" Watermark="https://org12345.crm7.dynamics.com/"
+                     IsEnabled="{Binding !IsConnected}" VerticalAlignment="Center" Margin="0,0,8,0" />
+            <ComboBox Grid.Column="2" SelectedIndex="{Binding AuthModeIndex}" IsEnabled="{Binding !IsConnected}"
+                      VerticalAlignment="Center" Margin="0,0,8,0" MinWidth="150"
+                      ToolTip.Tip="登录方式">
+                <ComboBoxItem Content="浏览器登录 (OAuth/MFA)" />
+                <ComboBoxItem Content="用户名密码" />
+                <ComboBoxItem Content="设备码" />
+            </ComboBox>
+            <TextBox Grid.Column="3" Text="{Binding UserName}" PlaceholderText="用户名(可选)" Width="210"
+                     IsEnabled="{Binding !IsConnected}" VerticalAlignment="Center" Margin="0,0,8,0"
+                     ToolTip.Tip="登录账号,如 user@contoso.onmicrosoft.com。浏览器登录时会预填;用户名密码登录时必填" />
+            <TextBox Grid.Column="4" Text="{Binding Password}" PasswordChar="•" PlaceholderText="密码" Width="140"
+                     IsVisible="{Binding IsPasswordMode}" IsEnabled="{Binding !IsConnected}"
+                     VerticalAlignment="Center" Margin="0,0,12,0" />
+            <Button Grid.Column="5" Classes="toolbar" x:Name="ConnectButton" Content="连接"
+                    Command="{Binding ConnectCommand}" IsEnabled="{Binding !IsBusy}" />
+            <Button Grid.Column="6" Classes="toolbar" Command="{Binding CancelConnectCommand}" Content="取消" IsVisible="{Binding IsBusy}" />
+            <Button Grid.Column="7" Classes="toolbar" x:Name="TranslateButton" Content="翻译 (⌘↩)" IsEnabled="{Binding !IsBusy}" />
+            <Button Grid.Column="8" Classes="toolbar accent" x:Name="RunButton" Content="执行 (F5)" IsEnabled="{Binding !IsBusy}" Margin="0" />
+        </Grid>
+
+        <!-- 编辑区:左 SQL 右 FetchXML -->
+        <Grid Grid.Row="1" Grid.Column="2" ColumnDefinitions="*,4,*">
+            <Grid Grid.Column="0" RowDefinitions="Auto,*">
+                <TextBlock Grid.Row="0" Classes="pane-title" Text="SQL" />
+                <Border Grid.Row="1" Classes="pane">
+                    <ae:TextEditor x:Name="SqlEditor" FontFamily="Menlo,Consolas,monospace" FontSize="14"
+                                   ShowLineNumbers="True" WordWrap="False" Padding="6" />
+                </Border>
+            </Grid>
+            <GridSplitter Grid.Column="1" ResizeDirection="Columns" Background="Transparent" />
+            <Grid Grid.Column="2" RowDefinitions="Auto,*">
+                <Grid Grid.Row="0" ColumnDefinitions="*,Auto">
+                    <TextBlock Classes="pane-title" Text="FetchXML" />
+                    <Button Grid.Column="1" x:Name="CopyButton" Content="复制" Padding="8,2" FontSize="12" Margin="0,0,4,4" />
+                </Grid>
+                <Border Grid.Row="1" Classes="pane">
+                    <ae:TextEditor x:Name="FetchEditor" FontFamily="Menlo,Consolas,monospace" FontSize="14"
+                                   IsReadOnly="True" ShowLineNumbers="False" WordWrap="True" Padding="6" />
+                </Border>
+            </Grid>
+        </Grid>
+
+        <GridSplitter Grid.Row="2" Grid.Column="2" ResizeDirection="Rows" Background="Transparent" />
+
+        <!-- 结果 -->
+        <TabControl Grid.Row="3" Grid.Column="2" Classes="bottom" Padding="0"
+                    SelectedIndex="{Binding BottomTabIndex}">
+            <TabItem Header="结果">
+                <Border Classes="pane">
+                    <DataGrid x:Name="ResultsGrid" ItemsSource="{Binding Rows}" AutoGenerateColumns="False"
+                              IsReadOnly="True" CanUserReorderColumns="True" CanUserResizeColumns="True"
+                              GridLinesVisibility="All" FontSize="13" />
+                </Border>
+            </TabItem>
+            <TabItem Header="表结构">
+                <Grid RowDefinitions="Auto,*">
+                    <Grid Grid.Row="0" ColumnDefinitions="240,*" Margin="0,0,0,6">
+                        <TextBox Grid.Column="0" x:Name="SchemaFilterBox" Text="{Binding SchemaFilter}"
+                                 PlaceholderText="搜索列名..." />
+                        <SelectableTextBlock Grid.Column="1" Text="{Binding SchemaTitle}" FontSize="12" Opacity="0.7"
+                                             Margin="10,0,0,0" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                    </Grid>
+                    <Border Grid.Row="1" Classes="pane">
+                        <DataGrid x:Name="SchemaGrid" ItemsSource="{Binding SchemaColumns}" AutoGenerateColumns="False"
+                                  IsReadOnly="True" CanUserResizeColumns="True" CanUserSortColumns="True"
+                                  GridLinesVisibility="All" FontSize="13">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="列名" Width="220" x:DataType="vm:MainViewModel+ColumnItem"
+                                                    Binding="{Binding LogicalName}" />
+                                <DataGridTextColumn Header="显示名" Width="200" x:DataType="vm:MainViewModel+ColumnItem"
+                                                    Binding="{Binding DisplayName}" />
+                                <DataGridTextColumn Header="类型" Width="140" x:DataType="vm:MainViewModel+ColumnItem"
+                                                    Binding="{Binding Type}" />
+                                <DataGridTextColumn Header="备注 / 选项值" Width="*" x:DataType="vm:MainViewModel+ColumnItem"
+                                                    Binding="{Binding Notes}" />
+                            </DataGrid.Columns>
+                        </DataGrid>
+                    </Border>
+                </Grid>
+            </TabItem>
+            <TabItem Header="ER 图">
+                <Grid RowDefinitions="Auto,*">
+                    <Grid Grid.Row="0" ColumnDefinitions="240,*" Margin="0,0,0,6">
+                        <TextBox Grid.Column="0" Text="{Binding ErFilter}" PlaceholderText="过滤关联表 / 列名..." />
+                        <SelectableTextBlock Grid.Column="1" Text="{Binding ErTitle}" FontSize="12" Opacity="0.7"
+                                             Margin="10,0,0,0" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                    </Grid>
+                    <Border Grid.Row="1" Classes="pane">
+                        <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
+                            <Canvas x:Name="ErCanvas" HorizontalAlignment="Left" VerticalAlignment="Top" />
+                        </ScrollViewer>
+                    </Border>
+                </Grid>
+            </TabItem>
+        </TabControl>
+
+        <!-- 状态栏 -->
+        <StackPanel Grid.Row="4" Grid.ColumnSpan="3" Margin="0,8,0,0" Spacing="4">
+            <TextBlock Text="{Binding Warnings}" TextWrapping="Wrap" Foreground="DarkOrange"
+                       IsVisible="{Binding Warnings, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+            <StackPanel Orientation="Horizontal" Spacing="8"
+                        IsVisible="{Binding DeviceCode, Converter={x:Static StringConverters.IsNotNullOrEmpty}}">
+                <TextBlock Text="验证码:" VerticalAlignment="Center" />
+                <TextBox Text="{Binding DeviceCode}" IsReadOnly="True" FontFamily="Menlo,Consolas,monospace"
+                         FontSize="16" FontWeight="Bold" MinWidth="140" />
+                <Button x:Name="CopyCodeButton" Content="复制验证码" />
+            </StackPanel>
+            <Grid ColumnDefinitions="*,Auto">
+                <SelectableTextBlock Grid.Column="0" Text="{Binding Status}" TextWrapping="Wrap" x:Name="StatusText" />
+                <TextBlock Grid.Column="1" Text="{Binding ConnectionLabel}" Opacity="0.7" Margin="12,0,0,0" />
+            </Grid>
+        </StackPanel>
+    </Grid>
+</Window>
