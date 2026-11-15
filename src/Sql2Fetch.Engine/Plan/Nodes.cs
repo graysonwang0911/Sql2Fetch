@@ -268,6 +268,8 @@ public sealed class SortNode : PlanNode
     public required IList<ExpressionWithSortOrder> Orders { get; init; }
     /// <summary>SELECT 别名 → 实际列(或聚合的 FetchXML alias)。</summary>
     public required IReadOnlyDictionary<string, ScalarExpression> SelectAliases { get; init; }
+    /// <summary>ORDER BY 里的聚合/日期分组表达式 → 对应输出列的 alias(由 PlanBuilder 事先匹配好)。</summary>
+    public IReadOnlyDictionary<ScalarExpression, string> ExpressionAliases { get; init; } = new Dictionary<ScalarExpression, string>();
 
     public override NodeSchema GetSchema() => Source.GetSchema();
 
@@ -280,6 +282,13 @@ public sealed class SortNode : PlanNode
         {
             var descending = order.SortOrder == SortOrder.Descending;
             var expr = order.Expression;
+
+            // ORDER BY COUNT(*) 这类表达式,已经对应到某个 alias
+            if (ExpressionAliases.TryGetValue(expr, out var expressionAlias))
+            {
+                scan.Fetch.Entity.Items.Add(new FetchOrder { Alias = expressionAlias, Descending = descending });
+                continue;
+            }
 
             // ORDER BY 里的 SELECT 别名
             if (expr is ColumnReferenceExpression { MultiPartIdentifier.Identifiers.Count: 1 } aliasRef
@@ -354,6 +363,8 @@ public sealed class OffsetNode : PlanNode
     public override PlanNode Fold(FoldContext ctx)
     {
         var scan = RequireScan(Source.Fold(ctx), Origin, "OFFSET 的数据源");
+        if (Fetch <= 0)
+            throw new SqlTranslationException("FETCH NEXT 的行数必须大于 0", Origin);
         if (Offset % Fetch != 0)
             throw new SqlTranslationException("OFFSET 必须是 FETCH NEXT 行数的整数倍(FetchXML 只支持按页取)", Origin,
                 $"例如 OFFSET {Fetch * (Offset / Fetch)} ROWS FETCH NEXT {Fetch} ROWS ONLY");

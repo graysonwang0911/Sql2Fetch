@@ -10,6 +10,9 @@ namespace Sql2Fetch.Engine;
 /// </summary>
 internal sealed class PlanBuilder
 {
+    /// <summary>FetchXML 的 top 属性只接受 1 到 5000。</summary>
+    internal const int MaxFetchTop = 5000;
+
     private static readonly HashSet<string> AggregateFunctions = new(StringComparer.OrdinalIgnoreCase) { "count", "sum", "avg", "min", "max" };
 
     private readonly IMetadataProvider _metadata;
@@ -24,8 +27,16 @@ internal sealed class PlanBuilder
     /// <summary>HAVING 翻译出的本地谓词;没有 HAVING 时为 null。</summary>
     public Having.RowPredicate? HavingPredicate { get; private set; }
     public string? HavingText { get; private set; }
-    /// <summary>为 HAVING 补进 FetchXML、但不该出现在结果里的列别名。</summary>
+    /// <summary>为 HAVING / ORDER BY 补进 FetchXML、但不该出现在结果里的列别名。</summary>
     public List<string> HiddenColumns { get; } = new();
+
+    /// <summary>
+    /// 有 HAVING 时,TOP / OFFSET-FETCH 不能交给服务器(那样会先截断再过滤,结果是错的),
+    /// 改为本地过滤之后再跳过 LocalOffset 行、取 LocalTop 行。
+    /// TOP 0 和超过 FetchXML 上限的 TOP 也走 LocalTop。
+    /// </summary>
+    public int? LocalTop { get; private set; }
+    public int LocalOffset { get; private set; }
 
     private static string FragmentText(TSqlFragment fragment)
     {
@@ -116,7 +127,8 @@ internal sealed class PlanBuilder
                     if (expr is FunctionCall func && AggregateFunctions.Contains(func.FunctionName.Value))
                     {
                         hasAggregate = true;
-                        var agg = BuildAggregate(func, alias, aggregates.Count);
+                        var agg = EnsureUniqueAlias(BuildAggregate(func, alias, aggregates.Count), alias is not null,
+                            aggregates.Select(a => a.Alias), func);
                         aggregates.Add(agg);
                         selectColumns.Add(new SelectColumn(agg.Alias, expr, alias));
                         selectAliases[agg.Alias] = expr;
@@ -148,8 +160,23 @@ internal sealed class PlanBuilder
 
         // GROUP BY
         var groupBy = new List<GroupByColumn>();
-        if (spec.GroupByClause is not null || hasAggregate)
+        var isAggregateQuery = spec.GroupByClause is not null || hasAggregate;
+        if (isAggregateQuery)
         {
+            // 聚合查询里每个输出列都要有唯一的 alias。两张表的同名列(a.name, c.name)默认都叫 name,这里错开
+            var usedNames = new HashSet<string>(aggregates.Select(a => a.Alias), StringComparer.OrdinalIgnoreCase);
+            for (var i = 0; i < selectColumns.Count; i++)
+            {
+                var sc = selectColumns[i];
+                if (sc.Expression is FunctionCall f && AggregateFunctions.Contains(f.FunctionName.Value)) continue;
+                if (usedNames.Add(sc.OutputName)) continue;
+                if (sc.ExplicitAlias is not null)
+                    throw new SqlTranslationException($"列别名 \"{sc.OutputName}\" 重复", sc.Expression, "每个输出列的别名必须唯一");
+                var unique = Enumerable.Range(2, int.MaxValue - 2).Select(n => $"{sc.OutputName}_{n}").First(usedNames.Add);
+                selectColumns[i] = sc with { OutputName = unique };
+                selectAliases[unique] = sc.Expression;
+            }
+
             var groupExprs = spec.GroupByClause?.GroupingSpecifications
                 .Select(g => g is ExpressionGroupingSpecification e ? e.Expression
                     : throw SqlTranslationException.NotSupported(g, "GROUP BY " + g.GetType().Name))
@@ -210,14 +237,74 @@ internal sealed class PlanBuilder
 
         // ORDER BY —— 放在 SELECT 之后,这样可以引用 SELECT 的别名
         if (spec.OrderByClause is not null)
-            selectNode.Source = new SortNode { Source = selectNode.Source, Orders = spec.OrderByClause.OrderByElements, SelectAliases = selectAliases, Origin = spec.OrderByClause };
+        {
+            // 聚合查询里直接写 ORDER BY COUNT(*) / YEAR(col):对应到已有的聚合列或分组列的 alias;
+            // SELECT 里没有的聚合,作为隐藏列补进 FetchXML
+            var expressionAliases = new Dictionary<ScalarExpression, string>();
+            if (isAggregateQuery)
+            {
+                foreach (var order in spec.OrderByClause.OrderByElements)
+                {
+                    var expr = order.Expression;
+                    while (expr is ParenthesisExpression p) expr = p.Expression;
+                    if (expr is not FunctionCall func) continue;
+
+                    if (AggregateFunctions.Contains(func.FunctionName.Value))
+                    {
+                        var wanted = BuildAggregate(func, null, aggregates.Count);
+                        var existing = aggregates.FirstOrDefault(a => a.Function == wanted.Function && a.Distinct == wanted.Distinct
+                            && (a.Column is null || wanted.Column is null ? a.Column is null && wanted.Column is null : SameColumn(a.Column, wanted.Column)));
+                        if (existing is null)
+                        {
+                            existing = wanted with { Alias = $"orderby_{HiddenColumns.Count + 1}" };
+                            aggregates.Add(existing);
+                            HiddenColumns.Add(existing.Alias);
+                        }
+                        expressionAliases[order.Expression] = existing.Alias;
+                    }
+                    else if (TryGetDateGrouping(func, out var dateCol, out var grouping))
+                    {
+                        var match = groupBy.FirstOrDefault(g => SameColumn(g.Column, dateCol!) && g.DateGrouping == grouping);
+                        if (match is not null) expressionAliases[order.Expression] = match.Alias;
+                    }
+                }
+            }
+
+            selectNode.Source = new SortNode
+            {
+                Source = selectNode.Source, Orders = spec.OrderByClause.OrderByElements, SelectAliases = selectAliases,
+                ExpressionAliases = expressionAliases, Origin = spec.OrderByClause,
+            };
+        }
 
         // TOP
         if (spec.TopRowFilter is not null)
         {
             if (spec.TopRowFilter.Percent) throw SqlTranslationException.NotSupported(spec.TopRowFilter, "TOP ... PERCENT");
             if (spec.TopRowFilter.WithTies) throw SqlTranslationException.NotSupported(spec.TopRowFilter, "TOP ... WITH TIES");
-            selectNode.Source = new TopNode { Source = selectNode.Source, Top = IntLiteral(spec.TopRowFilter.Expression), Origin = spec.TopRowFilter };
+            var top = IntLiteral(spec.TopRowFilter.Expression);
+
+            if (HavingPredicate is not null)
+            {
+                if (spec.OffsetClause is not null)
+                    throw new SqlTranslationException("TOP 和 OFFSET/FETCH 不能同时使用", spec.TopRowFilter);
+                LocalTop = top;
+                _ctx.Warn($"TOP 要在 HAVING 之后生效,因此也改为本地处理:过滤后再取前 {top} 行");
+            }
+            else if (top == 0 || top > MaxFetchTop)
+            {
+                // FetchXML 的 top 表达不了这两种情况,改由执行时本地控制行数
+                if (spec.OffsetClause is not null)
+                    throw new SqlTranslationException("TOP 和 OFFSET/FETCH 不能同时使用", spec.TopRowFilter);
+                LocalTop = top;
+                _ctx.Warn(top == 0
+                    ? "TOP 0 不会发送查询,只返回表头;生成的 FetchXML 里不含 top"
+                    : $"FetchXML 的 top 最大为 {MaxFetchTop},TOP {top} 改为执行时翻页取够 {top} 行;生成的 FetchXML 里不含 top");
+            }
+            else
+            {
+                selectNode.Source = new TopNode { Source = selectNode.Source, Top = top, Origin = spec.TopRowFilter };
+            }
         }
 
         // OFFSET / FETCH
@@ -225,13 +312,21 @@ internal sealed class PlanBuilder
         {
             if (spec.OffsetClause.FetchExpression is null)
                 throw new SqlTranslationException("OFFSET 必须配合 FETCH NEXT n ROWS ONLY 使用", spec.OffsetClause);
-            selectNode.Source = new OffsetNode
+            var offset = IntLiteral(spec.OffsetClause.OffsetExpression);
+            var fetch = IntLiteral(spec.OffsetClause.FetchExpression);
+            if (fetch == 0)
+                throw new SqlTranslationException("FETCH NEXT 的行数必须大于 0", spec.OffsetClause.FetchExpression);
+
+            if (HavingPredicate is not null)
             {
-                Source = selectNode.Source,
-                Offset = IntLiteral(spec.OffsetClause.OffsetExpression),
-                Fetch = IntLiteral(spec.OffsetClause.FetchExpression),
-                Origin = spec.OffsetClause,
-            };
+                LocalOffset = offset;
+                LocalTop = fetch;
+                _ctx.Warn($"OFFSET/FETCH 要在 HAVING 之后生效,因此也改为本地处理:过滤后跳过 {offset} 行,再取 {fetch} 行");
+            }
+            else
+            {
+                selectNode.Source = new OffsetNode { Source = selectNode.Source, Offset = offset, Fetch = fetch, Origin = spec.OffsetClause };
+            }
         }
 
         return selectNode;
@@ -313,6 +408,20 @@ internal sealed class PlanBuilder
             throw new SqlTranslationException($"别名 \"{alias}\" 不能用于 FetchXML", func, "别名只能包含字母、数字和下划线");
 
         return new AggregateColumn(function, col, distinct, alias ?? defaultAlias, func);
+    }
+
+    /// <summary>聚合列的 alias 不能和已有的重复:默认别名自动加序号(count, count_2),显式写的别名重复则报错。</summary>
+    private static AggregateColumn EnsureUniqueAlias(AggregateColumn agg, bool isExplicit, IEnumerable<string> usedAliases, TSqlFragment origin)
+    {
+        var used = new HashSet<string>(usedAliases, StringComparer.OrdinalIgnoreCase);
+        if (!used.Contains(agg.Alias)) return agg;
+        if (isExplicit)
+            throw new SqlTranslationException($"列别名 \"{agg.Alias}\" 重复", origin, "每个输出列的别名必须唯一");
+        for (var n = 2; ; n++)
+        {
+            var candidate = $"{agg.Alias}_{n}";
+            if (!used.Contains(candidate)) return agg with { Alias = candidate };
+        }
     }
 
     private GroupByColumn ToGroupBy(ScalarExpression expr, string? alias)

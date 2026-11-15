@@ -34,7 +34,9 @@ public sealed class DataverseConnection : IDisposable
         Url = url;
         _app = app;
         _scopes = new[] { new Uri(url, "/.default").ToString() };
-        _http = new HttpClient { BaseAddress = new Uri(url, "/api/data/v9.2/"), Timeout = TimeSpan.FromMinutes(5) };
+        // 开启响应压缩:元数据和大结果集的 JSON 很大,压缩后传输量通常只有原来的十分之一左右
+        var handler = new SocketsHttpHandler { AutomaticDecompression = System.Net.DecompressionMethods.All };
+        _http = new HttpClient(handler) { BaseAddress = new Uri(url, "/api/data/v9.2/"), Timeout = TimeSpan.FromMinutes(5) };
         _http.DefaultRequestHeaders.Add("OData-MaxVersion", "4.0");
         _http.DefaultRequestHeaders.Add("OData-Version", "4.0");
         _http.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));

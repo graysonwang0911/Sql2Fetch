@@ -18,6 +18,13 @@ public sealed class ConversionResult
     public string? LocalFilterText { get; init; }
     /// <summary>只为本地过滤而加进 FetchXML 的列,结果里应去掉。</summary>
     public IReadOnlyList<string> HiddenColumns { get; init; } = Array.Empty<string>();
+    /// <summary>
+    /// 需要在本地控制的行数上限;null 表示没有。两种情况会用到:有本地过滤(HAVING)时的 TOP / FETCH,
+    /// 以及 FetchXML 的 top 表达不了的 TOP(0 或超过 5000)。
+    /// </summary>
+    public int? LocalTop { get; init; }
+    /// <summary>有本地过滤时,OFFSET 跳过的行数(过滤之后计)。</summary>
+    public int LocalOffset { get; init; }
 }
 
 /// <summary>
@@ -54,6 +61,8 @@ public static class SqlToFetchXml
             LocalFilter = builder.HavingPredicate,
             LocalFilterText = builder.HavingText,
             HiddenColumns = builder.HiddenColumns,
+            LocalTop = builder.LocalTop,
+            LocalOffset = builder.LocalOffset,
         };
     }
 }

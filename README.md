@@ -33,7 +33,25 @@
 - 用户名 + 密码（账号启用了 MFA 时不可用）
 - 设备码
 
-## 运行
+## 下载
+
+在 [Releases](https://github.com/graysonwang0911/Sql2Fetch/releases) 页面下载对应平台的压缩包，解压即可运行，不需要安装 .NET：
+
+| 平台 | 文件 | 启动 |
+|---|---|---|
+| Windows | `Sql2Fetch-<版本>-win-x64.zip`（ARM 设备用 `win-arm64`） | 双击 `Sql2Fetch.App.exe` |
+| macOS | `osx-arm64`（Apple 芯片）或 `osx-x64`（Intel） | 终端里运行 `./Sql2Fetch.App` |
+| Linux | `linux-x64` | 终端里运行 `./Sql2Fetch.App` |
+
+运行包没有做代码签名：
+
+- Windows 首次运行可能弹出 SmartScreen 提示，点「更多信息 → 仍要运行」。
+- macOS 会拦截从网上下载的未签名程序，解压后先执行一次：
+  ```bash
+  xattr -dr com.apple.quarantine Sql2Fetch-osx-arm64
+  ```
+
+## 从源码运行
 
 需要先安装 [.NET 10 SDK](https://dotnet.microsoft.com/download)。
 
@@ -73,13 +91,13 @@ ORDER BY c.createdon DESC
 | 语法 | 说明 |
 |---|---|
 | `SELECT` 列、`*`、列别名 | |
-| `TOP`、`DISTINCT`、`OFFSET ... FETCH` | |
+| `TOP`、`DISTINCT`、`OFFSET ... FETCH` | FetchXML 的 `top` 只接受 1–5000；`TOP` 超过 5000 时改为执行时翻页取够行数，`TOP 0` 只返回表头 |
 | `WHERE` | `AND` / `OR` / `NOT`、比较运算、`IN`、`BETWEEN`、`LIKE`、`IS NULL` |
 | `JOIN` | `INNER`、`LEFT`、`RIGHT`（转成 `LEFT`），支持多层嵌套和额外的 `ON` 条件 |
 | 聚合 | `COUNT`、`SUM`、`AVG`、`MIN`、`MAX`，`GROUP BY` |
 | 按日期分组 | `YEAR(col)`、`DATEPART(month, col)` 等 |
-| `HAVING` | FetchXML 本身不支持，由 Sql2Fetch 取回数据后在本地过滤 |
-| `ORDER BY` | |
+| `HAVING` | FetchXML 本身不支持，由 Sql2Fetch 取回数据后在本地过滤；同时写了 `TOP` / `OFFSET` 时，也改为过滤之后在本地应用 |
+| `ORDER BY` | 聚合查询里可以直接写 `ORDER BY COUNT(*) DESC` |
 | FetchXML 运算符函数 | 如 `createdon = lastxdays(7)`、`ownerid = eq_userid()`、`thismonth()` |
 
 **不支持：**
@@ -95,6 +113,7 @@ ORDER BY c.createdon DESC
 - **记录数不是实时的**：表清单里的记录数来自 Dataverse 定期刷新的统计值，可能滞后最多约一天。要精确数字请执行 `SELECT COUNT(*)`。
 - **表类型是推断的**：「业务 / 配置 / 系统 / 中间表」是根据所有权类型、是否自定义表等元数据推断出来的，不是 Dataverse 的官方分类，仅供参考。鼠标悬停在类型上可以看到判断依据。
 - **翻页上限**：一次执行默认最多取 10 页，超过时状态栏会提示还有更多数据。
+- **取消**：连接或执行查询的过程中，点工具栏的「取消」可以中止。
 
 ## 本地数据
 

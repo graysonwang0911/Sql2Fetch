@@ -148,7 +148,8 @@
                      VerticalAlignment="Center" Margin="0,0,12,0" />
             <Button Grid.Column="5" Classes="toolbar" x:Name="ConnectButton" Content="连接"
                     Command="{Binding ConnectCommand}" IsEnabled="{Binding !IsBusy}" />
-            <Button Grid.Column="6" Classes="toolbar" Command="{Binding CancelConnectCommand}" Content="取消" IsVisible="{Binding IsBusy}" />
+            <Button Grid.Column="6" Classes="toolbar" Command="{Binding CancelConnectCommand}" Content="取消" IsEnabled="{Binding IsBusy}"
+                    ToolTip.Tip="中止正在进行的连接或查询" />
             <Button Grid.Column="7" Classes="toolbar" x:Name="TranslateButton" Content="翻译 (⌘↩)" IsEnabled="{Binding !IsBusy}" />
             <Button Grid.Column="8" Classes="toolbar accent" x:Name="RunButton" Content="执行 (F5)" IsEnabled="{Binding !IsBusy}" Margin="0" />
         </Grid>

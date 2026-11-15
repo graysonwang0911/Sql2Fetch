@@ -547,7 +547,14 @@ public partial class MainViewModel : ViewModelBase
     }
 
     [RelayCommand]
-    private void CancelConnect() => _connectCts?.Cancel();
+    private void CancelConnect()
+    {
+        // 「取消」按钮在连接和执行查询时都显示,两种情况都要能取消
+        _connectCts?.Cancel();
+        _runCts?.Cancel();
+    }
+
+    private CancellationTokenSource? _runCts;
 
     private async Task DisconnectAsync()
     {
@@ -629,6 +636,7 @@ public partial class MainViewModel : ViewModelBase
 
         IsBusy = true;
         IsError = false;
+        var cts = _runCts = new CancellationTokenSource();
 
         try
         {
@@ -638,14 +646,14 @@ public partial class MainViewModel : ViewModelBase
 
             Status = "正在执行...";
             var executor = new FetchXmlExecutor(_connection);
-            var result = await executor.ExecuteAsync(_lastResult.FetchXml, entitySet,
-                localFilter: _lastResult.LocalFilter, hiddenColumns: _lastResult.HiddenColumns);
+            var result = await executor.ExecuteAsync(_lastResult.FetchXml, entitySet, ct: cts.Token,
+                localFilter: _lastResult.LocalFilter, hiddenColumns: _lastResult.HiddenColumns,
+                outputColumns: _lastResult.Columns,
+                localTop: _lastResult.LocalTop, localOffset: _lastResult.LocalOffset);
 
             Rows.Clear();
-            // 没有记录时,执行器无法从 JSON 推断列名。保留 SQL 投影列,让空结果仍能显示表头。
-            var resultColumns = result.Columns.Count == 0 && _lastResult.Columns.All(c => c.Name != "*")
-                ? _lastResult.Columns.Select(c => c.Name).ToArray()
-                : result.Columns.ToArray();
+            // 列以引擎的输出列为准(执行器已处理),空结果也有表头
+            var resultColumns = result.Columns.ToArray();
             ResultColumnsChanged?.Invoke(resultColumns);
             foreach (var row in result.Rows) Rows.Add(row);
             BottomTabIndex = 0;
@@ -653,6 +661,10 @@ public partial class MainViewModel : ViewModelBase
             Status = $"返回 {result.Rows.Count} 行,{resultColumns.Length} 列,{result.PagesRetrieved} 页,耗时 {result.Elapsed.TotalSeconds:F1} 秒"
                      + (result.MoreRecords ? "(还有更多数据,已达翻页上限)" : "")
                      + (_lastResult.LocalFilter is not null ? $";HAVING 在本地过滤掉 {result.FilteredOut} 行" : "");
+        }
+        catch (OperationCanceledException)
+        {
+            Status = "已取消执行(之前的结果保持不变)";
         }
         catch (DataverseException ex)
         {
@@ -665,6 +677,7 @@ public partial class MainViewModel : ViewModelBase
         finally
         {
             IsBusy = false;
+            _runCts = null;
         }
     }
 

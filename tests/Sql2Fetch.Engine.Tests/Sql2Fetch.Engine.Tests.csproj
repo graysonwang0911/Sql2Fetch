@@ -20,6 +20,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Sql2Fetch.Engine\Sql2Fetch.Engine.csproj" />
+    <ProjectReference Include="..\..\src\Sql2Fetch.Dataverse\Sql2Fetch.Dataverse.csproj" />
   </ItemGroup>
 
 </Project>
